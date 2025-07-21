@@ -29,6 +29,8 @@ async def load_model():
             print(f"Model loaded successfully! Type: {type(model).__name__}")
         else:
             print("Warning: Model file not found. Please ensure best_model.pkl exists.")
+            # If model is critical, consider raising an exception here to fail startup
+            # raise RuntimeError("best_model.pkl not found!")
             return
             
         # Load pre-fitted encoders
@@ -38,19 +40,21 @@ async def load_model():
             print(f"Encoders loaded successfully! Available encoders: {list(encoders.keys())}")
         else:
             print("Warning: Encoders file not found. Please ensure encoders.pkl exists.")
-            # Create dummy encoders as fallback
+            # Create dummy encoders as fallback (NOT recommended for production)
             categorical_features = [
                 'workclass', 'marital_status', 'occupation', 
                 'relationship', 'race', 'gender', 'native_country'
             ]
             for feature in categorical_features:
                 encoders[feature] = LabelEncoder()
-            print("Created fallback encoders (not recommended for production)")
+            print("Created fallback encoders (NOT recommended for production - predictions may be incorrect)")
             
     except Exception as e:
-        print(f"Error loading model: {e}")
+        print(f"Error loading model or encoders: {e}")
         import traceback
         traceback.print_exc()
+        # Raise HTTP exception or a direct exception to stop app startup if critical
+        raise HTTPException(status_code=500, detail=f"Failed to load model or encoders during startup: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -83,7 +87,7 @@ class EmployeeFeatures(BaseModel):
     age: int
     workclass: str
     fnlwgt: int
-    education: str
+    education: str # Will be dropped during preprocessing
     educational_num: int
     marital_status: str
     occupation: str
@@ -107,8 +111,11 @@ class BatchPredictionResponse(BaseModel):
 def preprocess_data(data: pd.DataFrame) -> pd.DataFrame:
     """Preprocess the input data to match training data format"""
     try:
-        # Make a copy to avoid modifying original data
         df = data.copy()
+        
+        # IMPORTANT: Strip whitespace from all string columns in incoming data
+        for col in df.select_dtypes(include='object').columns:
+            df[col] = df[col].str.strip()
         
         # Handle missing values represented as '?'
         df = df.replace('?', 'Others')
@@ -117,19 +124,15 @@ def preprocess_data(data: pd.DataFrame) -> pd.DataFrame:
         if 'workclass' in df.columns:
             df = df[~df['workclass'].isin(['Without-pay', 'Never-worked'])]
         
-        # Apply age filtering (if age column exists)
         if 'age' in df.columns:
             df = df[(df['age'] <= 75) & (df['age'] >= 17)]
         
-        # Apply educational-num filtering
         if 'educational_num' in df.columns:
             df = df[(df['educational_num'] <= 16) & (df['educational_num'] >= 5)]
         
-        # Drop education column if it exists (as done in training)
         if 'education' in df.columns:
             df = df.drop(columns=['education'])
-        
-        # Apply label encoding to categorical features
+            
         categorical_features = [
             'workclass', 'marital_status', 'occupation', 
             'relationship', 'race', 'gender', 'native_country'
@@ -137,25 +140,27 @@ def preprocess_data(data: pd.DataFrame) -> pd.DataFrame:
         
         for feature in categorical_features:
             if feature in df.columns and feature in encoders:
-                # Handle unseen categories by mapping them to a default value
                 def safe_transform(x):
-                    try:
-                        if x in encoders[feature].classes_:
-                            return encoders[feature].transform([x])[0]
+                    s_x = str(x) 
+                    if s_x in encoders[feature].classes_:
+                        return encoders[feature].transform([s_x])[0]
+                    else:
+                        if 'Others' in encoders[feature].classes_:
+                            return encoders[feature].transform(['Others'])[0]
+                        elif len(encoders[feature].classes_) > 0:
+                            warnings.warn(f"Unseen value '{s_x}' for feature '{feature}'. 'Others' not in classes, using '{encoders[feature].classes_[0]}'.")
+                            return encoders[feature].transform([encoders[feature].classes_[0]])[0]
                         else:
-                            # Map unseen categories to 'Others' if it exists, otherwise first class
-                            default_class = 'Others' if 'Others' in encoders[feature].classes_ else encoders[feature].classes_[0]
-                            return encoders[feature].transform([default_class])[0]
-                    except Exception as e:
-                        print(f"Error encoding {feature}: {x}, using default value")
-                        return 0  # Return default integer value
+                            warnings.warn(f"Encoder for '{feature}' has no classes. Cannot transform '{s_x}'. Returning 0.")
+                            return 0 
                 
                 df[feature] = df[feature].apply(safe_transform)
-        
-        # Ensure all columns are numeric
+            elif feature in df.columns:
+                print(f"Warning: Encoder for feature '{feature}' not found. Column might be untransformed or cause errors.")
+
         for col in df.columns:
             if df[col].dtype == 'object':
-                print(f"Warning: Column {col} is still object type, attempting conversion")
+                print(f"Warning: Column {col} is still object type after encoding, attempting final conversion.")
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
         print(f"Preprocessed data shape: {df.shape}")
@@ -193,33 +198,32 @@ async def predict_salary(employee: EmployeeFeatures):
         raise HTTPException(status_code=503, detail="Model not loaded")
     
     try:
-        # Convert to DataFrame
         input_data = pd.DataFrame([employee.model_dump()])
         print(f"Input data: {input_data}")
         
-        # Preprocess the data
         processed_data = preprocess_data(input_data)
-        print(f"Processed data shape: {processed_data.shape}")
         
-        # Make prediction
+        if processed_data.empty:
+            raise HTTPException(status_code=400, detail="Input data was entirely filtered out during preprocessing.")
+
+        print(f"Processed data shape before prediction: {processed_data.shape}")
+        
         prediction = model.predict(processed_data)[0]
         print(f"Raw prediction: {prediction}")
         
-        # Convert numpy types to Python types for JSON serialization
         if isinstance(prediction, (np.int64, np.int32)):
             prediction = int(prediction)
         elif isinstance(prediction, (np.float64, np.float32)):
             prediction = float(prediction)
         else:
             prediction = str(prediction)
-        
-        # Get prediction probabilities if available
+
         probabilities = None
         confidence = None
         try:
             if hasattr(model, 'predict_proba'):
                 proba = model.predict_proba(processed_data)[0]
-                probabilities = [float(p) for p in proba]  # Convert to Python floats
+                probabilities = [float(p) for p in proba]
                 confidence = float(max(probabilities))
         except Exception as e:
             print(f"Could not get probabilities: {e}")
@@ -230,6 +234,8 @@ async def predict_salary(employee: EmployeeFeatures):
             confidence=confidence
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Prediction error: {str(e)}")
         import traceback
@@ -246,18 +252,22 @@ async def predict_batch(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="File must be CSV format")
     
     try:
-        # Read the uploaded CSV file
         contents = await file.read()
-        df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
+        column_names_for_batch_input = [
+            'age', 'workclass', 'fnlwgt', 'education', 'educational_num',
+            'marital_status', 'occupation', 'relationship', 'race', 'gender',
+            'capital_gain', 'capital_loss', 'hours_per_week', 'native_country', 'income'
+        ]
+        df = pd.read_csv(io.StringIO(contents.decode('utf-8')), header=None, names=column_names_for_batch_input)
         print(f"Loaded CSV with shape: {df.shape}")
         
-        # Preprocess the data
         processed_data = preprocess_data(df)
         
-        # Make predictions
+        if processed_data.empty:
+            return BatchPredictionResponse(predictions=[], processed_count=0)
+            
         raw_predictions = model.predict(processed_data)
         
-        # Convert numpy types to Python types
         predictions = []
         for pred in raw_predictions:
             if isinstance(pred, (np.int64, np.int32)):
@@ -272,6 +282,8 @@ async def predict_batch(file: UploadFile = File(...)):
             processed_count=len(predictions)
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Batch prediction error: {str(e)}")
         import traceback
@@ -288,18 +300,29 @@ async def predict_batch_with_download(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="File must be CSV format")
     
     try:
-        # Read the uploaded CSV file
         contents = await file.read()
-        df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
-        original_df = df.copy()  # Keep original for output
+        column_names_for_batch_input = [
+            'age', 'workclass', 'fnlwgt', 'education', 'educational_num',
+            'marital_status', 'occupation', 'relationship', 'race', 'gender',
+            'capital_gain', 'capital_loss', 'hours_per_week', 'native_country', 'income'
+        ]
+        df = pd.read_csv(io.StringIO(contents.decode('utf-8')), header=None, names=column_names_for_batch_input)
+        original_df = df.copy()
         
-        # Preprocess the data
         processed_data = preprocess_data(df)
         
-        # Make predictions
+        if processed_data.empty:
+            output_buffer = io.StringIO()
+            pd.DataFrame(columns=list(original_df.columns) + ['predicted_salary']).to_csv(output_buffer, index=False)
+            output_buffer.seek(0)
+            return FileResponse(
+                io.BytesIO(output_buffer.getvalue().encode('utf-8')),
+                media_type='text/csv',
+                filename='salary_predictions.csv'
+            )
+
         raw_predictions = model.predict(processed_data)
         
-        # Convert predictions to appropriate format
         predictions = []
         for pred in raw_predictions:
             if isinstance(pred, (np.int64, np.int32)):
@@ -309,19 +332,22 @@ async def predict_batch_with_download(file: UploadFile = File(...)):
             else:
                 predictions.append(str(pred))
         
-        # Add predictions to original dataframe
-        original_df['predicted_salary'] = predictions
+        # Ensure predictions align with original rows after filtering.
+        original_df['predicted_salary'] = pd.Series(predictions, index=processed_data.index)
+        original_df.fillna({'predicted_salary': 'Filtered'}, inplace=True)
         
-        # Save to temporary file
-        output_file = "predictions_output.csv"
-        original_df.to_csv(output_file, index=False)
+        output_buffer = io.StringIO()
+        original_df.to_csv(output_buffer, index=False)
+        output_buffer.seek(0)
         
         return FileResponse(
-            output_file,
+            io.BytesIO(output_buffer.getvalue().encode('utf-8')),
             media_type='text/csv',
             filename='salary_predictions.csv'
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Batch prediction error: {str(e)}")
         import traceback
@@ -346,11 +372,3 @@ async def get_model_info():
         return model_info
     except Exception as e:
         return {"error": f"Error getting model info: {str(e)}"}
-
-if __name__ == "__main__":
-    import uvicorn
-    # When deploying to Railway, they will set the PORT environment variable
-    # Use 0.0.0.0 to bind to all available network interfaces
-    port = int(os.environ.get("PORT", 8000)) 
-    print(f"DEBUG: Uvicorn attempting to run on host=0.0.0.0, port={port}") # Keep this debug print for Railway logs
-    uvicorn.run(app, host="0.0.0.0", port=port)
