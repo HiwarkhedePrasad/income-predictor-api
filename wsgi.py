@@ -5,7 +5,7 @@ import os
 # Add your project directory to the sys.path
 # This makes sure your 'main.py' module can be found
 # Replace 'your-username' and 'your-project-path'
-path = '/home/your-username/your-project-path' # e.g., '/home/myusername/income_predictor_api'
+path = '/home/HiwarkhedePrasad/income-predictor-api' # e.g., '/home/myusername/income_predictor_api'
 if path not in sys.path:
     sys.path.insert(0, path)
 
