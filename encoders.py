@@ -2,21 +2,35 @@ import pandas as pd
 import pickle
 from sklearn.preprocessing import LabelEncoder
 import numpy as np
+import os # Added for path handling
 
 def create_encoders_for_adult_dataset(csv_file_path):
     """
     Create encoders specifically for the Adult/Census Income dataset
     """
     
-    # Load the training data
+    # Define column names based on the Adult dataset documentation
+    # This is CRUCIAL because adult.data does not have a header row
+    column_names = [
+        'age', 'workclass', 'fnlwgt', 'education', 'educational_num',
+        'marital_status', 'occupation', 'relationship', 'race', 'gender',
+        'capital_gain', 'capital_loss', 'hours_per_week', 'native_country', 'income'
+    ]
+
+    # Load the training data, specifying no header and providing column names
     print("Loading training data...")
-    df = pd.read_csv(csv_file_path)
+    df = pd.read_csv(csv_file_path, header=None, names=column_names) 
     print(f"Original data shape: {df.shape}")
     print(f"Columns: {list(df.columns)}")
     
     # Apply the same preprocessing as your training pipeline
     print("\nApplying preprocessing...")
     
+    # Strip whitespace from all string columns immediately after loading
+    # This is critical because some values in the adult.data have leading spaces (e.g., ' Private')
+    for col in df.select_dtypes(include='object').columns:
+        df[col] = df[col].str.strip()
+        
     # Handle missing values represented as '?'
     df = df.replace('?', 'Others')
     print(f"After replacing '?' with 'Others': {df.shape}")
@@ -46,7 +60,7 @@ def create_encoders_for_adult_dataset(csv_file_path):
     
     print(f"Final preprocessed data shape: {df.shape}")
     
-    # Define categorical features to encode
+    # Define categorical features to encode (these names will now correctly match the DataFrame)
     categorical_features = [
         'workclass', 'marital_status', 'occupation', 
         'relationship', 'race', 'gender', 'native_country'
@@ -62,23 +76,23 @@ def create_encoders_for_adult_dataset(csv_file_path):
             
             # Check unique values
             unique_values = df[feature].unique()
-            print(f"  Unique values: {len(unique_values)}")
-            print(f"  Sample values: {unique_values[:10]}")
+            print(f"   Unique values: {len(unique_values)}")
+            print(f"   Sample values: {unique_values[:10]}")
             
             # Create and fit encoder
             encoder = LabelEncoder()
             encoder.fit(df[feature].astype(str))
             encoders[feature] = encoder
             
-            print(f"  Encoded classes: {encoder.classes_}")
-            print(f"  Number of classes: {len(encoder.classes_)}")
+            print(f"   Encoded classes: {encoder.classes_}")
+            print(f"   Number of classes: {len(encoder.classes_)}")
             
             # Show encoding mapping
-            print("  Encoding mapping:")
+            print("   Encoding mapping:")
             for i, class_name in enumerate(encoder.classes_):
-                print(f"    '{class_name}' -> {i}")
+                print(f"     '{class_name}' -> {i}")
         else:
-            print(f"Warning: {feature} not found in data")
+            print(f"Warning: {feature} not found in data (This warning should now disappear for these features!)")
     
     # Save encoders to pickle file
     with open('encoders.pkl', 'wb') as f:
@@ -103,8 +117,8 @@ def verify_encoders():
         
         for feature, encoder in loaded_encoders.items():
             print(f"\n{feature.upper()}:")
-            print(f"  Number of classes: {len(encoder.classes_)}")
-            print(f"  Classes: {list(encoder.classes_)}")
+            print(f"   Number of classes: {len(encoder.classes_)}")
+            print(f"   Classes: {list(encoder.classes_)}")
         
         return True
     except Exception as e:
@@ -122,41 +136,44 @@ def test_encoding_examples():
             encoders = pickle.load(f)
         
         # Test examples based on your sample data
+        # Note: These values should match the *stripped* values from the dataset
         test_cases = {
-            'workclass': ['State-gov', 'Private', 'Self-emp-not-inc'],
+            'workclass': ['State-gov', 'Private', 'Self-emp-not-inc', 'Others'], # Added 'Others'
             'marital_status': ['Never-married', 'Married-civ-spouse', 'Divorced'],
             'occupation': ['Adm-clerical', 'Exec-managerial', 'Handlers-cleaners'],
             'relationship': ['Not-in-family', 'Husband', 'Wife'],
             'race': ['White', 'Black'],
             'gender': ['Male', 'Female'],
-            'native_country': ['United-States', 'Cuba']
+            'native_country': ['United-States', 'Cuba', 'Others'] # Added 'Others'
         }
         
         for feature, test_values in test_cases.items():
             if feature in encoders:
                 print(f"\n{feature}:")
                 for value in test_values:
+                    # Check if value exists in the encoder's classes directly
                     if value in encoders[feature].classes_:
                         encoded = encoders[feature].transform([value])[0]
-                        print(f"  '{value}' -> {encoded}")
+                        print(f"   '{value}' -> {encoded}")
                     else:
-                        print(f"  '{value}' -> NOT FOUND (would use 'Others')")
+                        print(f"   '{value}' -> NOT FOUND in encoder classes (would use 'Others' or first class in production)")
+            else:
+                print(f"\nSkipping {feature} - encoder not found.")
         
     except Exception as e:
         print(f"Error testing encoders: {e}")
 
 if __name__ == "__main__":
     # Update this path to your actual training data CSV file
-    csv_file_path = "adult.data"  # UPDATE THIS PATH!
+    csv_file_path = "./adult.data" # Using relative path to the current directory
     
-    import os
+    # This block handles finding the CSV file, either directly or via command line argument
     if not os.path.exists(csv_file_path):
         print(f"❌ Training data file not found: {csv_file_path}")
         print("\nPlease update the 'csv_file_path' variable with the correct path to your training CSV file.")
         print("\nAlternatively, you can run this script with:")
-        print("python create_encoders.py your_actual_file.csv")
+        print("python encoders.py your_actual_file.csv")
         
-        # Check if command line argument provided
         import sys
         if len(sys.argv) > 1:
             csv_file_path = sys.argv[1]
@@ -181,7 +198,7 @@ if __name__ == "__main__":
     print("\n" + "="*50)
     print("NEXT STEPS:")
     print("="*50)
-    print("1. Upload 'encoders.pkl' to your Render deployment")
-    print("2. Make sure 'best_model.pkl' is also uploaded")
-    print("3. Deploy your FastAPI application")
+    print("1. Upload 'encoders.pkl' to your Render deployment (via Git push)")
+    print("2. Make sure 'best_model.pkl' is also uploaded (via Git push)")
+    print("3. Deploy your FastAPI application (Railway will do this on push)")
     print("4. Test the API endpoints")
