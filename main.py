@@ -349,4 +349,8 @@ async def get_model_info():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # When deploying to Railway, they will set the PORT environment variable
+    # Use 0.0.0.0 to bind to all available network interfaces
+    port = int(os.environ.get("PORT", 8000)) 
+    print(f"DEBUG: Uvicorn attempting to run on host=0.0.0.0, port={port}") # Keep this debug print for Railway logs
+    uvicorn.run(app, host="0.0.0.0", port=port)
