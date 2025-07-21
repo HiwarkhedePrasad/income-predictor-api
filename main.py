@@ -24,23 +24,28 @@ async def load_model():
             model = joblib.load("best_model.pkl")
             print("Model loaded successfully!")
         else:
-            # If model doesn't exist, we'll need to train it or provide a dummy model
             print("Warning: Model file not found. Please ensure best_model.pkl exists.")
+            return
             
-        # Create label encoders for categorical features
-        # Note: In production, you should save and load the actual encoders used during training
-        categorical_features = [
-            'workclass', 'education', 'marital_status', 'occupation', 
-            'relationship', 'race', 'gender', 'native_country'
-        ]
-        
-        for feature in categorical_features:
-            encoders[feature] = LabelEncoder()
-            
-        print("Encoders initialized successfully!")
+        # Load pre-fitted encoders (you should save these during training)
+        if os.path.exists("encoders.pkl"):
+            with open("encoders.pkl", 'rb') as f:
+                encoders = pickle.load(f)
+            print("Encoders loaded successfully!")
+        else:
+            print("Warning: Encoders file not found. Please ensure encoders.pkl exists.")
+            # Create dummy encoders as fallback (not recommended for production)
+            categorical_features = [
+                'workclass', 'marital_status', 'occupation', 
+                'relationship', 'race', 'gender', 'native_country'
+            ]
+            for feature in categorical_features:
+                encoders[feature] = LabelEncoder()
             
     except Exception as e:
         print(f"Error loading model: {e}")
+
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -122,20 +127,23 @@ def preprocess_data(data: pd.DataFrame) -> pd.DataFrame:
         ]
         
         for feature in categorical_features:
-            if feature in data.columns:
-                # For new categories not seen during training, assign them to 'Others'
-                unique_values = data[feature].unique()
-                try:
-                    data[feature] = encoders[feature].fit_transform(data[feature])
-                except ValueError:
-                    # Handle unseen categories
-                    data[feature] = data[feature].apply(lambda x: 'Others' if x not in encoders[feature].classes_ else x)
-                    data[feature] = encoders[feature].transform(data[feature])
+            if feature in data.columns and feature in encoders:
+                # Handle unseen categories by mapping them to a default value
+                def safe_transform(x):
+                    if x in encoders[feature].classes_:
+                        return encoders[feature].transform([x])[0]
+                    else:
+                        # Map unseen categories to the first class or 'Others' if it exists
+                        default_class = 'Others' if 'Others' in encoders[feature].classes_ else encoders[feature].classes_[0]
+                        return encoders[feature].transform([default_class])[0]
+                
+                data[feature] = data[feature].apply(safe_transform)
         
         return data
         
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error preprocessing data: {str(e)}")
+    
 
 @app.get("/")
 async def root():
