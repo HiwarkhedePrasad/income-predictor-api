@@ -1,6 +1,3 @@
-Okay, here's the complete `readme.md` file content. You can directly copy and paste this into your `readme.md` file.
-
-````markdown
 # Employee Salary Classification API
 
 This is a FastAPI application that provides an API for predicting employee salary classifications. It leverages a pre-trained machine learning model and encoders to make predictions on individual employee data or batch data provided via CSV.
@@ -25,18 +22,17 @@ This is a FastAPI application that provides an API for predicting employee salar
 - Python 3.8+
 - `pip` (Python package installer)
 
-### 1. Clone the repository
+### 1\. Clone the repository
 
 If this code is part of a larger repository, ensure you have cloned it. If it's a standalone project, create a directory and place the `main.py` (or similar, assuming the provided code is in `main.py`) file within it.
 
-### 2. Install Dependencies
+### 2\. Install Dependencies
 
 Navigate to the project directory and install the required Python packages:
 
 ```bash
 pip install "fastapi[all]" pandas scikit-learn joblib
 ```
-````
 
 ### 3\. Place Model and Encoders
 
@@ -231,9 +227,3 @@ The `preprocess_data` function applies several transformations to the input data
 - **CORS:** For production deployments, it is highly recommended to replace `allow_origins=["*"]` with the specific URL(s) of your frontend application for security.
 - **Model and Encoders:** Ensure `best_model.pkl` and `encoders.pkl` are trained on data that is representative of the data you expect to send for prediction.
 - **Environment Variables:** For production, sensitive configurations or file paths should ideally be managed via environment variables.
-
-<!-- end list -->
-
-```
-
-```
